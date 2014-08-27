@@ -1,34 +1,40 @@
 define([
     "jQuery",
-    "utils/analytic",
+    "utils/url",
+    "core/events",
     "core/state",
-    "core/search",
     "core/progress",
-    "core/exercise",
-    "core/quiz"
-], function($, analytic, state, search, progress, exercises, quiz) {
+    "core/loading",
+    "core/search",
+    "core/glossary"
+], function($, URL, events, state, progress, loading, search, glossary) {
     var prev, next;
-    var githubCountStars, githubCountWatch;
 
-    var updateHistory = function(url, title) {
-        history.pushState({ path: url }, title, url);
-    };
+    var usePushState = (typeof history.pushState !== "undefined");
 
-    var handleNavigation = function(url, push) {
-        if (typeof history.pushState === "undefined") {
+    var handleNavigation = function(relativeUrl, push) {
+        var url = URL.join(window.location.pathname, relativeUrl);
+        console.log("navigate to ", url, "baseurl="+relativeUrl, "current="+window.location.pathname);
+
+        if (!usePushState) {
             // Refresh the page to the new URL if pushState not supported
-            location.href = url;
+            location.href = relativeUrl;
             return
         }
 
-        return $.get(url)
+        return loading.show($.get(url)
         .done(function (html) {
+            // Push url to history
+            if (push) history.pushState({ path: url }, null, url);
+
+            // Replace html content
             html = html.replace( /<(\/?)(html|head|body)([^>]*)>/ig, function(a,b,c,d){
                 return '<' + b + 'div' + ( b ? '' : ' data-element="' + c + '"' ) + d + '>';
             });
 
             var $page = $(html);
             var $pageHead = $page.find("[data-element=head]");
+            var $pageBody = $page.find('.book');
 
             // Merge heads
             var headContent = $pageHead.html()
@@ -38,29 +44,24 @@ define([
             });
             $("head").html(headContent);
 
-            // Update header, body
-            $('.book-header').html($page.find('.book-header').html());
-            $('.book-body').html($page.find('.book-body').html());
-
-            // Update summary
+            // Merge body
+            var bodyClass = $(".book").attr("class");
             var scrollPosition = $('.book-summary .summary').scrollTop();
-            $('.book-summary').html($page.find('.book-summary').html());
+            $pageBody.toggleClass("with-summary", $(".book").hasClass("with-summary"))
+
+            $(".book").replaceWith($pageBody);
+            $(".book").attr("class", bodyClass);
             $('.book-summary .summary').scrollTop(scrollPosition);
 
             // Update state
-            state.update($page);
-
-            if (push) updateHistory(url, null);
+            state.update($("html"));
+            // recover search keyword
+            search.recover();
             preparePage();
         })
-        .fail(function () {
-            location.href = url;
-        });
-    };
-
-    var updateGitHubCounts = function() {
-        $(".book-header .count-star span").text(githubCountStars);
-        $(".book-header .count-watch span").text(githubCountWatch);
+        .fail(function (e) {
+            location.href = relativeUrl;
+        }));
     };
 
     var updateNavigationPosition = function() {
@@ -74,15 +75,14 @@ define([
     var preparePage = function() {
         var $pageWrapper = $(".book-body .page-wrapper");
 
-        // Bind exercises/quiz
-        exercises.init();
-        quiz.init();
-
         // Show progress
         progress.show();
 
         // Update navigation position
         updateNavigationPosition();
+
+        // Set glossary items
+        glossary.prepare();
 
         // Reset scroll
         $pageWrapper.scrollTop(0);
@@ -90,25 +90,8 @@ define([
         // Focus on content
         $pageWrapper.focus();
 
-        // Prepare search bar
-        search.prepare();
-
-        // Update GitHub count
-        if (state.githubId) {
-            if (githubCountStars) {
-                updateGitHubCounts();
-            } else {
-                $.getJSON("https://api.github.com/repos/"+state.githubId)
-                .done(function(repo) {
-                    githubCountStars = repo.stargazers_count;
-                    githubCountWatch = repo.subscribers_count;
-                    updateGitHubCounts();
-                });
-            }
-        }
-
-        // Send to mixpanel
-        analytic.track("page.view");
+        // Notify
+        events.trigger("page.change");
     };
 
     var handlePagination = function (e) {
@@ -129,7 +112,7 @@ define([
         if (url) handleNavigation(url, true);
     };
 
-    
+
 
     var init = function() {
         // Prevent cache so that using the back button works
@@ -146,14 +129,13 @@ define([
             if (event.state === null) {
                 return;
             }
-
             return handleNavigation(event.state.path, false);
         };
 
         $(document).on('click', ".navigation-prev", handlePagination);
         $(document).on('click', ".navigation-next", handlePagination);
         $(document).on('click', ".summary [data-path] a", handlePagination);
-        
+
         $(window).resize(updateNavigationPosition);
 
         // Prepare current page
@@ -166,3 +148,4 @@ define([
         goPrev: goPrev
     };
 });
+

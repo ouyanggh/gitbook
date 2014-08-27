@@ -4,6 +4,7 @@ var Q = require('q');
 var _ = require('lodash');
 var path = require('path');
 var prog = require('commander');
+var tinylr = require('tiny-lr-fork');
 
 var pkg = require('../package.json');
 var generators = require("../lib/generate").generators;
@@ -12,62 +13,96 @@ var fs = require('../lib/generate/fs');
 
 var utils = require('./utils');
 var build = require('./build');
+var Server = require('./server');
+var platform = require("./platform");
 
 // General options
 prog
 .version(pkg.version);
 
-var buildCommand = function(command) {
-    return command
-    .option('-o, --output <directory>', 'Path to output directory, defaults to ./_book')
-    .option('-f, --format <name>', 'Change generation format, defaults to site, availables are: '+_.keys(generators).join(", "))
-    .option('-t, --title <name>', 'Name of the book to generate, default is extracted from readme')
-    .option('-i, --intro <intro>', 'Description of the book to generate, default is extracted from readme')
-    .option('-g, --github <repo_path>', 'ID of github repo like : username/repo')
-    .option('--githubHost <url>', 'The url of the github host (defaults to https://github.com/')
-    .option('--theme <path>', 'Path to theme directory');
-};
-
-buildCommand(prog.command('build [source_dir]'))
+build.command(prog.command('build [source_dir]'))
 .description('Build a gitbook from a directory')
 .action(build.folder);
 
-buildCommand(prog.command('serve [source_dir]'))
+build.command(prog.command('serve [source_dir]'))
 .description('Build then serve a gitbook from a directory')
 .option('-p, --port <port>', 'Port for server to listen on', 4000)
+.option('--no-watch', 'Disable restart with file watching')
 .action(function(dir, options) {
-    build.folder(dir, options || {})
-    .then(function(_options) {
-        console.log();
-        console.log('Starting server ...');
-        return utils.serveDir(_options.output, options.port)
-        .fail(utils.logError);
-    })
-    .then(function() {
-        console.log('Serving book on http://localhost:'+options.port);
-        console.log();
-        console.log('Press CTRL+C to quit ...');
+    var server = new Server();
+
+    // init livereload server
+    var lrOptions = {port: 35729};
+    var lrServer = tinylr(lrOptions);
+    var lrPath = undefined;
+    lrServer.listen(lrOptions.port, function(err) {
+      if (err) { return console.log(err); }
+      console.log('Live reload server started on port: ' + lrOptions.port);
     });
+
+    var generate = function() {
+        if (server.isRunning()) console.log("Stopping server");
+
+        server.stop()
+        .then(function() {
+            return build.folder(dir, _.extend(options || {}, {
+                defaultsPlugins: ["livereload"]
+            }));
+        })
+        .then(function(_options) {
+            console.log();
+            console.log('Starting server ...');
+            return server.start(_options.output, options.port)
+            .then(function() {
+                console.log('Serving book on http://localhost:'+options.port);
+
+                if (lrPath) {
+                  // trigger livereload
+                  lrServer.changed({body:{files:[lrPath]}})
+                }
+
+                if (!options.watch) return;
+                return utils.watch(_options.input)
+                .then(function(filepath) {
+                    // set livereload path
+                    lrPath = filepath;
+                    console.log("Restart after change in files");
+                    console.log('');
+                    return generate();
+                })
+            })
+        })
+        .fail(utils.logError);
+    };
+
+    console.log('Press CTRL+C to quit ...');
+    console.log('')
+    generate();
 });
 
-buildCommand(prog.command('pdf [source_dir]'))
+build.commandEbook(prog.command('pdf [source_dir]'))
 .description('Build a gitbook as a PDF')
-.option('-pf, --paperformat <format>', 'PDF paper format (default is A4): "5in*7.5in", "10cm*20cm", "A4", "Letter"')
 .action(function(dir, options) {
     build.file(dir, _.extend(options, {
         extension: "pdf",
-        format: "pdf"
+        format: "ebook"
     }));
 });
 
-buildCommand(prog.command('ebook [source_dir]'))
-.description('Build a gitbook as a eBook')
-.option('-c, --cover <path>', 'Cover image, default is cover.png if exists')
+build.commandEbook(prog.command('epub [source_dir]'))
+.description('Build a gitbook as a ePub book')
 .action(function(dir, options) {
-    var ext = options.output ? path.extname(options.output) : "epub";
-
     build.file(dir, _.extend(options, {
-        extension: ext,
+        extension: "epub",
+        format: "ebook"
+    }));
+});
+
+build.commandEbook(prog.command('mobi [source_dir]'))
+.description('Build a gitbook as a Mobi book')
+.action(function(dir, options) {
+    build.file(dir, _.extend(options, {
+        extension: "mobi",
         format: "ebook"
     }));
 });
@@ -78,6 +113,22 @@ prog
 .action(function(dir) {
     dir = dir || process.cwd();
     return initDir(dir);
+});
+
+prog
+.command('publish [source_dir]')
+.description('Publish content to the associated gitbook.io book')
+.action(function(dir) {
+    dir = dir || process.cwd();
+    return platform.publish(dir);
+});
+
+prog
+.command('git:remote [source_dir] [book_id]')
+.description('Adds a git remote to a book repository')
+.action(function(dir, bookId) {
+    dir = dir || process.cwd();
+    return platform.remote(dir, bookId);
 });
 
 // Parse and fallback to help if no args

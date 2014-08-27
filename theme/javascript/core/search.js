@@ -67,12 +67,10 @@ define([
             e.preventDefault();
             toggleSearch();
         });
-    };
 
-    var prepare = function() {
-        var $searchInput = $(".book-search input");
 
-        $searchInput.keyup(function(e) {
+        // Type in search bar
+        $(document).on("keyup", ".book-search input", function(e) {
             var key = (e.keyCode ? e.keyCode : e.which);
             var q = $(this).val();
 
@@ -83,19 +81,34 @@ define([
             }
             if (q.length == 0) {
                 sidebar.filter(null);
+                storage.remove("keyword");
             } else {
                 var results = search(q);
                 sidebar.filter(
                     _.pluck(results, "path")
                 );
+                storage.set("keyword", q);
             }
-        });
-    }
+        })
+
+    };
+
+    // filter sidebar menu with current search keyword
+    var recoverSearch = function() {
+        var keyword = storage.get("keyword", "");
+        if(keyword.length > 0) {
+            if(!isSearchOpen()){
+                toggleSearch();
+            }
+            sidebar.filter(_.pluck(search(keyword), "path"));
+        }
+        $(".book-search input").val(keyword);
+    };
 
     return {
         init: init,
         search: search,
         toggle: toggleSearch,
-        prepare: prepare
+        recover:recoverSearch
     };
 });
